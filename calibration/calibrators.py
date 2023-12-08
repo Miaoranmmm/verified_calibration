@@ -3,6 +3,7 @@ import numpy as np
 
 from . import utils
 
+from typing import Literal, List, Tuple, Union, Dict 
 
 class HistogramCalibrator:
     def __init__(self, num_calibration, num_bins):
@@ -162,9 +163,10 @@ class HistogramMarginalCalibrator:
 
 class PlattBinnerMarginalCalibrator:
 
-    def __init__(self, num_calibration, num_bins):
-        self._num_calibration = num_calibration
+    def __init__(self, num_calibration, num_bins, way: Literal['old', 'new'] = 'new'):
+        self._num_calibration = num_calibration  # redundant, over cautious
         self._num_bins = num_bins
+        self._way = way
 
     def train_calibration(self, probs, labels):
         """Train a calibrator given probs and labels.
@@ -183,20 +185,41 @@ class PlattBinnerMarginalCalibrator:
         assert self._k == np.max(labels) - np.min(labels) + 1
         labels_one_hot = utils.get_labels_one_hot(np.array(labels), self._k)
         assert labels_one_hot.shape == probs.shape
-        self._platts = []
-        self._calibrators = []
+        if self._way == 'old':
+            self._platts = []
+            self._calibrators = []
+        elif self._way == 'new':
+            self._logistic_regressors = [] # one logistic regressor per class.
+            self._bins = [] # the lower and upper bounds of each bin obtained during training
+            self._bin_means = [] # The mean of each bin per class
+
         for c in range(self._k):
             # For each class c, get the probabilities the model output for that class, and whether
-            # the data point was actually class c, or not.
+            # the data point was actually class c, or not.         
             probs_c = probs[:, c]
             labels_c = labels_one_hot[:, c]
-            platt_c = utils.get_platt_scaler(probs_c, labels_c)
-            self._platts.append(platt_c)
-            platt_probs_c = platt_c(probs_c)
-            bins = utils.get_equal_bins(platt_probs_c, num_bins=self._num_bins)
-            calibrator_c = utils.get_discrete_calibrator(platt_probs_c, bins)
-            self._calibrators.append(calibrator_c)
 
+            # Step 1: Platt scaling 
+            if self._way == 'old':
+                platt_c = utils.get_platt_scaler(probs_c, labels_c)
+                self._platts.append(platt_c)
+                platt_probs_c = platt_c(probs_c)
+
+            elif self._way == 'new':
+                logistic_regressor_c= utils.logistic_regression_fit(probs_c, labels_c)
+                self._logistic_regressors.append(logistic_regressor_c)
+                platt_probs_c = utils.platt_scale(probs_c, logistic_regressor_c)
+
+            # Step 2: Binning and mappping to bin means 
+            if self._way == 'old':
+                bins = utils.get_equal_bins(platt_probs_c, num_bins=self._num_bins)
+                calibrator_c = utils.get_discrete_calibrator(platt_probs_c, bins)
+                self._calibrators.append(calibrator_c)
+            elif self._way == 'new':
+                bins = utils.get_equal_bins(platt_probs_c, num_bins=self._num_bins)
+                self._bins.append(bins)
+                bin_means_c = utils.get_bin_means_discrete(platt_probs_c, bins)
+                self._bin_means.append(bin_means_c)
 
     def calibrate(self, probs):
         probs = np.array(probs)
@@ -204,6 +227,16 @@ class PlattBinnerMarginalCalibrator:
         calibrated_probs = np.zeros(probs.shape)
         for c in range(self._k):
             probs_c = probs[:, c]
-            platt_probs_c = self._platts[c](probs_c)
-            calibrated_probs[:, c] = self._calibrators[c](platt_probs_c)
+            if self._way == 'old':
+                platt_probs_c = self._platts[c](probs_c)
+                calibrated_probs[:, c] = self._calibrators[c](platt_probs_c)
+            elif self._way == 'new':
+                logistic_regressor_c = self._logistic_regressors[c] # load the parameters of the logistic regressor for class c
+                platt_probs_c = utils.platt_scale(probs_c, logistic_regressor_c) # platt scale the probabilities for class c
+                
+                bin_means_c = self._bin_means[c] # retrieve the bin means for class c
+                
+                bins_c = self._bins[c] # retrieve the boundaries of the bin for class c
+                bin_indices = np.searchsorted(bins_c, platt_probs_c) # determining which bin each Platt scaled probability belongs to
+                calibrated_probs[:, c] = bin_means_c[bin_indices] # map each Platt scaled probability to the mean of the bin it belongs to
         return calibrated_probs

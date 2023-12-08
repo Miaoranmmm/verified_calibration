@@ -453,6 +453,31 @@ def bootstrap_std(data: List[T], estimator=None, num_samples=100) -> Tuple[float
 
 # Re-Calibration utilities.
 
+# Forrest new code
+def platt_scale(probs, clf: LogisticRegression):
+    """Scale model output based on a logistic regression scaler 
+    """
+    x = np.array(probs, dtype=np.float64)
+    x = np.clip(x, eps, 1 - eps)
+    x = np.log(x / (1 - x))
+    x = x * clf.coef_[0] + clf.intercept_
+    output = 1 / (1 + np.exp(-x))
+    return output
+
+# Forrest new code
+def logistic_regression_fit(model_probs, labels) -> LogisticRegression:
+    """Perform logistic regression between model output and labels.
+    """
+    clf = LogisticRegression(C=1e10, solver='lbfgs')
+    eps = 1e-12
+    model_probs = model_probs.astype(dtype=np.float64)
+    model_probs = np.expand_dims(model_probs, axis=-1)
+    model_probs = np.clip(model_probs, eps, 1 - eps)
+    model_probs = np.log(model_probs / (1 - model_probs))
+    clf.fit(model_probs, labels)
+    return clf 
+
+# No longer needed in v2 
 def get_platt_scaler(model_probs, labels, get_clf=False):
     clf = LogisticRegression(C=1e10, solver='lbfgs')
     eps = 1e-12
@@ -491,6 +516,21 @@ def get_histogram_calibrator(model_probs, values, bins):
         return bin_means[indices]
     return calibrator
 
+# Forrest new code 
+def get_bin_means_discrete(model_probs, bins):
+    binned_values = [[] for _ in range(len(bins))]
+    for prob in model_probs:
+        bin_idx = get_bin(prob, bins)
+        binned_values[bin_idx].append(prob)
+    def safe_mean(values, bin_idx):
+        if len(values) == 0:
+            if bin_idx == 0:
+                return float(bins[0]) / 2.0
+            return float(bins[bin_idx] + bins[bin_idx - 1]) / 2.0
+        return np.mean(values)
+    bin_means = [safe_mean(values, bidx) for values, bidx in zip(binned_values, range(len(bins)))]
+    bin_means = np.array(bin_means)
+    return bin_means
 
 def get_discrete_calibrator(model_probs, bins):
     return get_histogram_calibrator(model_probs, model_probs, bins)
