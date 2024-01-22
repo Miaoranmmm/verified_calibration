@@ -520,8 +520,9 @@ def get_histogram_calibrator(model_probs, values, bins):
 def get_bin_means_discrete(model_probs, bins):
     binned_values = [[] for _ in range(len(bins))]
     for prob in model_probs:
-        bin_idx = get_bin(prob, bins)
+        bin_idx = get_bin(prob, bins) # determine where to insert the prob
         binned_values[bin_idx].append(prob)
+    print('binned_values:', binned_values)
     def safe_mean(values, bin_idx):
         if len(values) == 0:
             if bin_idx == 0:
